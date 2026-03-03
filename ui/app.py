@@ -15,6 +15,7 @@ import customtkinter
 from Managers.AccountsManager import AccountManager
 from Managers.LogManager import LogManager
 from Managers.SettingsManager import SettingsManager
+from Managers.LicenseManager import LicenseManager
 from .accounts_list_frame import AccountsListFrame
 from .accounts_tab import AccountsControl
 from .config_tab import ConfigTab
@@ -149,6 +150,8 @@ class App(customtkinter.CTk):
         self.account_manager = AccountManager()
         self.log_manager = LogManager()
         self.settings_manager = SettingsManager()
+        self.license_manager = LicenseManager(self.settings_manager)
+        self.hwid_value = self.license_manager.get_hwid()
         self.account_row_items = []
         self.account_badges = {}
         self.sdr_regions = {}
@@ -235,6 +238,7 @@ class App(customtkinter.CTk):
 
         self.nav_buttons = {}
         nav_items = [("functional", "Functionals"), ("config", "Configurations"), ("license", "License"), ("stats", "Accs Statistic")]
+        self.nav_titles = dict(nav_items)
         for idx, (key, text) in enumerate(nav_items, start=1):
             btn = customtkinter.CTkButton(
                 self.sidebar,
@@ -277,6 +281,10 @@ class App(customtkinter.CTk):
             "stats": self._build_stats_section(self.content),
         }
 
+        self._refresh_license_status_ui(False, "Подписка не проверена")
+        self._update_nav_locks()
+        self._start_license_status_tracking()
+        
     def _run_hidden_cmd(self, cmd, check=False):
         return subprocess.run(
             cmd,
@@ -869,8 +877,138 @@ class App(customtkinter.CTk):
     def _build_license_section(self, parent):
         frame = customtkinter.CTkFrame(parent, fg_color=BG_CARD, corner_radius=10, border_width=1, border_color=BG_BORDER)
         frame.grid_columnconfigure(0, weight=1)
-        customtkinter.CTkLabel(frame, text="License", font=customtkinter.CTkFont(size=30, weight="bold"), text_color=TXT_MAIN).grid(row=0, column=0, padx=16, pady=(20, 8), sticky="w")
+
+        customtkinter.CTkLabel(
+            frame,
+            text="License",
+            font=customtkinter.CTkFont(size=30, weight="bold"),
+            text_color=TXT_MAIN,
+        ).grid(row=0, column=0, padx=16, pady=(20, 8), sticky="w")
+
+        self.license_status_label = customtkinter.CTkLabel(
+            frame,
+            text="Подписка не проверена",
+            text_color=ACCENT_RED,
+            font=customtkinter.CTkFont(size=14, weight="bold"),
+        )
+        self.license_status_label.grid(row=1, column=0, padx=16, pady=(0, 14), sticky="w")
+
+        hwid_row = customtkinter.CTkFrame(frame, fg_color=BG_CARD_ALT, corner_radius=8, border_width=1, border_color=BG_BORDER)
+        hwid_row.grid(row=2, column=0, padx=16, pady=8, sticky="ew")
+        hwid_row.grid_columnconfigure(0, weight=1)
+
+        customtkinter.CTkLabel(hwid_row, text="HWID вашего ПК", text_color=TXT_SOFT).grid(row=0, column=0, padx=10, pady=(8, 2), sticky="w")
+        self.hwid_entry = customtkinter.CTkEntry(hwid_row, height=34)
+        self.hwid_entry.grid(row=1, column=0, padx=10, pady=(0, 8), sticky="ew")
+        self.hwid_entry.insert(0, self.hwid_value)
+        self.hwid_entry.configure(state="readonly")
+
+        customtkinter.CTkButton(
+            hwid_row,
+            text="Скопировать",
+            width=120,
+            height=34,
+            fg_color=ACCENT_BLUE,
+            hover_color=ACCENT_BLUE_DARK,
+            command=self._copy_hwid,
+        ).grid(row=1, column=1, padx=(0, 10), pady=(0, 8))
+
+        settings_row = customtkinter.CTkFrame(frame, fg_color="transparent")
+        settings_row.grid(row=3, column=0, padx=16, pady=8, sticky="ew")
+        settings_row.grid_columnconfigure(1, weight=1)
+
+        customtkinter.CTkLabel(settings_row, text="Vercel check URL", text_color=TXT_SOFT).grid(row=0, column=0, padx=(0, 10), pady=4, sticky="w")
+        self.license_vercel_entry = customtkinter.CTkEntry(settings_row)
+        self.license_vercel_entry.grid(row=0, column=1, pady=4, sticky="ew")
+        self.license_vercel_entry.insert(0, self.settings_manager.get("LicenseVercelCheckUrl", "") or "")
+
+        customtkinter.CTkLabel(settings_row, text="Firebase URL", text_color=TXT_SOFT).grid(row=1, column=0, padx=(0, 10), pady=4, sticky="w")
+        self.license_firebase_entry = customtkinter.CTkEntry(settings_row)
+        self.license_firebase_entry.grid(row=1, column=1, pady=4, sticky="ew")
+        self.license_firebase_entry.insert(0, self.settings_manager.get("LicenseFirebaseUrl", "") or "")
+
+        customtkinter.CTkLabel(settings_row, text="Firebase token", text_color=TXT_SOFT).grid(row=2, column=0, padx=(0, 10), pady=4, sticky="w")
+        self.license_token_entry = customtkinter.CTkEntry(settings_row, show="*")
+        self.license_token_entry.grid(row=2, column=1, pady=4, sticky="ew")
+        self.license_token_entry.insert(0, self.settings_manager.get("LicenseFirebaseToken", "") or "")
+
+        actions = customtkinter.CTkFrame(frame, fg_color="transparent")
+        actions.grid(row=4, column=0, padx=16, pady=(8, 14), sticky="w")
+
+        customtkinter.CTkButton(actions, text="Сохранить", width=110, fg_color=BG_CARD_ALT, border_width=1, border_color=BG_BORDER, command=self._save_license_settings).grid(row=0, column=0, padx=(0, 8))
+        customtkinter.CTkButton(actions, text="Проверить", width=110, fg_color=ACCENT_GREEN, hover_color="#188244", command=self._manual_license_check).grid(row=0, column=1)
         return frame
+
+    def _copy_hwid(self):
+        try:
+            self.clipboard_clear()
+            self.clipboard_append(self.hwid_value)
+            self.log_manager.add_log("📋 HWID скопирован. Отправьте его в Telegram-бота")
+        except Exception as exc:
+            self.log_manager.add_log(f"❌ Ошибка копирования HWID: {exc}")
+
+    def _save_license_settings(self):
+        self.settings_manager.set("LicenseVercelCheckUrl", self.license_vercel_entry.get().strip())
+        self.settings_manager.set("LicenseFirebaseUrl", self.license_firebase_entry.get().strip())
+        self.settings_manager.set("LicenseFirebaseToken", self.license_token_entry.get().strip())
+        self.log_manager.add_log("💾 Настройки лицензии сохранены")
+
+    def _refresh_license_status_ui(self, active, message):
+        self.license_status_active = bool(active)
+        if hasattr(self, "license_status_label"):
+            self.license_status_label.configure(text=message, text_color=ACCENT_GREEN if active else ACCENT_RED)
+        self._update_nav_locks()
+
+    def _update_nav_locks(self):
+        for key, button in self.nav_buttons.items():
+            title = self.nav_titles.get(key, key.title())
+            if key == "license":
+                button.configure(text=f"{title} 🔓", border_color=ACCENT_GREEN)
+                continue
+
+            lock = "✔️" if self.license_status_active else "❌"
+            button.configure(text=f"{title} {lock}")
+
+    def _check_license(self):
+        self._save_license_settings()
+        return self.license_manager.check_subscription(self.hwid_value)
+
+    def _manual_license_check(self):
+        def done_callback(future):
+            try:
+                active, message = future.result()
+                self._refresh_license_status_ui(active, message)
+                self.log_manager.add_log(("✅ " if active else "❌ ") + message)
+                if active:
+                    self.show_section("functional")
+            except Exception as exc:
+                self.log_manager.add_log(f"❌ Ошибка проверки лицензии: {exc}")
+
+        self._run_action_async(self._check_license, done_callback)
+
+    def _start_license_status_tracking(self):
+        def poll_once():
+            if not self.winfo_exists():
+                return
+
+            def done_callback(future):
+                if not self.winfo_exists():
+                    return
+                try:
+                    active, message = future.result()
+                    previously_active = self.license_status_active
+                    self._refresh_license_status_ui(active, message)
+                    if previously_active and not active:
+                        self.log_manager.add_log("⛔ Подписка деактивирована. Приложение будет закрыто.")
+                        self.after(600, self.on_closing)
+                        return
+                except Exception as exc:
+                    self.log_manager.add_log(f"⚠️ Проверка лицензии не выполнена: {exc}")
+                self.after(60000, poll_once)
+
+            self._run_action_async(self._check_license, done_callback)
+
+        self.after(1500, poll_once)
 
     def _build_stats_section(self, parent):
         frame = customtkinter.CTkFrame(parent, fg_color=BG_CARD, corner_radius=10, border_width=1, border_color=BG_BORDER)
@@ -1313,12 +1451,22 @@ class App(customtkinter.CTk):
         self._section_switch_job = None
 
     def show_section(self, section_key):
+        if section_key != "license" and not self.license_status_active:
+            section_key = "license"
+            self.log_manager.add_log("🔒 Доступ закрыт: активируйте подписку в License")
+
         self._pending_section = section_key
 
         for key, button in self.nav_buttons.items():
             is_selected = key == section_key
+            if key != "license" and not self.license_status_active:
+                button_state = "disabled"
+            else:
+                button_state = "disabled" if is_selected else "normal"
+
             button.configure(
-                state="disabled" if is_selected else "normal",
+
+                state=button_state,
                 fg_color=BG_CARD if is_selected else BG_CARD_ALT,
                 border_color=ACCENT_GREEN if is_selected else ACCENT_RED,
             )
